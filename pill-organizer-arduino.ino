@@ -4,34 +4,42 @@
 #include <ArduinoJson.h>
 
 #ifndef STASSID
-#define STASSID ""
-#define STAPSK  ""
+#define STASSID                   ""
+#define STAPSK                    ""
 #endif
 
 #ifndef APSSID
-#define APSSID "ESPAP"
-#define APPSK ""
+#define APSSID                    "VCANUS_PILLO_AP"
+#define APPSK                     ""
 #endif
 
-#define GPIO5     5
-
+#define GPIO5                     5
+#define WIFI_CONNECTION_TIMEOUT   5000
 String ssid = STASSID;
 String passwd = STAPSK;
-const char *host = "google.com";
+const char *host = "http://vcanus.com/pillo";
 const uint16_t port = 80;
+WiFiMode _currentMode = WIFI_OFF;
 
-////WiFiServerSecure server(443);
-//WiFiServer server(80);
 ////WiFiClient client;
 ESP8266WebServer webServer(80);
 
+/**
+ * Internal function to set mode off
+ */
 void _setModeOFF() {
   WiFi.softAPdisconnect();
   WiFi.disconnect();
 }
 
+/**
+ * Internal function to set mode to be AP
+ */
 void _setModeAP() { 
   WiFi.mode(WIFI_AP);
+  IPAddress Ip(192, 168, 10, 1);
+  IPAddress NMask(255, 255, 255, 0);
+  WiFi.softAPConfig(Ip, Ip, NMask);
   
   Serial.print("Configuring access point...");
   Serial.println(APSSID);
@@ -42,6 +50,9 @@ void _setModeAP() {
   Serial.println(ip);
 }
 
+/**
+ * Internal common function to set mode to be STA
+ */
 void _setModeCommonSTA() {
   Serial.print("Connecting to ");
   Serial.println(ssid);
@@ -50,12 +61,27 @@ void _setModeCommonSTA() {
   char *passwdArray = new char [passwd.length()+1];
   ssid.toCharArray(ssidArray,ssid.length()+1);
   passwd.toCharArray(passwdArray,passwd.length()+1);
+  /**
+   * Delete the below, later
+   */
   Serial.println(ssidArray);
   Serial.println(passwdArray);
   WiFi.begin(ssidArray, passwdArray);
+  int elapsedTime = 0;
+  int oneDelay = 500;
   while(WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    delay(oneDelay);
+    elapsedTime += oneDelay;
     Serial.print(".");
+    if(elapsedTime > WIFI_CONNECTION_TIMEOUT) {
+      Serial.print("WiFi connecion failed");
+      if(_currentMode != WIFI_AP) {
+        WiFi.softAPdisconnect();
+        WiFi.disconnect();
+        _setModeAP();
+      }
+      return;
+    }
   }
   Serial.println("WiFi connected");
 
@@ -75,7 +101,10 @@ void _setModeAPSTA() {
 }
 
 // default mode is AP
-WiFiMode _currentMode = WIFI_OFF;
+/**
+ * Set Mode
+ * WIFI_OFF, WIFI_STA, WIFI_AP, WIFI_AP_STA
+ */
 void setMode(WiFiMode mode) {
   if(_currentMode == mode) {
     return;
@@ -138,7 +167,23 @@ void setWebServer() {
 
 void restAPIRoot() {
   Serial.println("root api is called");
-  webServer.send(200, "text/html", "<h1> You are connected </h1>");
+
+  int nNetwork = WiFi.scanNetworks();
+  const int capacity = JSON_OBJECT_SIZE(10);
+  StaticJsonBuffer<capacity> jb;
+  JsonObject &jsonObject = jb.createObject();
+  JsonArray &jsonArray = jb.createArray();
+  for(int i=0; i<nNetwork; i++) {
+    jsonArray.add(WiFi.SSID(i));
+  }
+  String arrayResult = "";
+  jsonArray.printTo(arrayResult);
+  jsonObject.set("name",jsonArray);
+  String result = "";
+  jsonObject.printTo(result);
+  Serial.println(result);
+
+  webServer.send(200,"application/json",result);
 }
 
 void restAPILed() {
@@ -187,13 +232,24 @@ void restAPIMode() {
 //      return;
 //    }
 //  }
-  DynamicJsonDocument doc(1024);
-  DeserializationError error = deserializeJson(doc, webServer.arg("plain"));
-  if(error)
-    return;
-  const char *type_temp = doc["type"];
-  const char *ssid_temp = doc["ssid"];
-  const char *passwd_temp = doc["passwd"];
+
+//  DynamicJsonDocument doc(1024);
+//  DeserializationError error = deserializeJson(doc, webServer.arg("plain"));
+//  if(error)
+//    return;
+//  const char *type_temp = doc["type"];
+//  const char *ssid_temp = doc["ssid"];
+//  const char *passwd_temp = doc["passwd"];
+
+  DynamicJsonBuffer jb;
+  JsonObject &jsonObject = jb.parseObject(webServer.arg("plan"));
+  if (!jsonObject.success()) {
+   Serial.println("parseObject() failed");
+   return;
+  }
+  const char *type_temp = jsonObject["type"];
+  const char *ssid_temp = jsonObject["ssid"];
+  const char *passwd_temp = jsonObject["passwd"];
 
   type = type_temp;
   ssid = ssid_temp;

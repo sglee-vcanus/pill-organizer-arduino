@@ -1,6 +1,7 @@
+/* ESP32, ArduinoJson version 6 */
 #include <SoftwareSerial.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
+#include <WiFi.h>
+#include <WebServer.h>
 #include <ArduinoJson.h>
 
 #ifndef STASSID
@@ -19,10 +20,12 @@ String ssid = STASSID;
 String passwd = STAPSK;
 const char *host = "http://vcanus.com/pillo";
 const uint16_t port = 80;
-WiFiMode _currentMode = WIFI_OFF;
+//WiFiMode _currentMode = WIFI_OFF;//for ESP8266
+WiFiMode_t _currentMode = WIFI_OFF;//for ESP32
 
 ////WiFiClient client;
-ESP8266WebServer webServer(80);
+//ESP8266WebServer webServer(80);//for ESP8266
+WebServer webServer(80);//for ESP32
 
 /**
  * Internal function to set mode off
@@ -57,10 +60,8 @@ void _setModeCommonSTA() {
   Serial.print("Connecting to ");
   Serial.println(ssid);
 
-  char *ssidArray = new char [ssid.length()+1];
-  char *passwdArray = new char [passwd.length()+1];
-  ssid.toCharArray(ssidArray,ssid.length()+1);
-  passwd.toCharArray(passwdArray,passwd.length()+1);
+  const char *ssidArray = ssid.c_str();
+  const char *passwdArray = passwd.c_str();
   /**
    * Delete the below, later
    */
@@ -105,7 +106,7 @@ void _setModeAPSTA() {
  * Set Mode
  * WIFI_OFF, WIFI_STA, WIFI_AP, WIFI_AP_STA
  */
-void setMode(WiFiMode mode) {
+void setMode(WiFiMode_t mode) {
   if(_currentMode == mode) {
     return;
   }
@@ -170,17 +171,29 @@ void restAPIRoot() {
 
   int nNetwork = WiFi.scanNetworks();
   const int capacity = JSON_OBJECT_SIZE(10);
+  /* ArduinoJson version 5
   StaticJsonBuffer<capacity> jb;
   JsonObject &jsonObject = jb.createObject();
   JsonArray &jsonArray = jb.createArray();
+   */
+  // ArduinoJson version 6
+  StaticJsonDocument<capacity> doc;
+  JsonObject jsonObject = doc.to<JsonObject>();
+  JsonArray jsonArray = doc.to<JsonArray>();
   for(int i=0; i<nNetwork; i++) {
     jsonArray.add(WiFi.SSID(i));
   }
   String arrayResult = "";
-  jsonArray.printTo(arrayResult);
-  jsonObject.set("name",jsonArray);
   String result = "";
+  /* Serialization for ArduinoJson version 5
+  jsonArray.printTo(arrayResult); 
+  jsonObject.set("name",jsonArray);
   jsonObject.printTo(result);
+   */
+  // ArduinoJson version 6
+  serializeJson(jsonArray, arrayResult);
+  jsonObject["name"] = jsonArray;
+  serializeJson(jsonObject, result);
   Serial.println(result);
 
   webServer.send(200,"application/json",result);
@@ -241,11 +254,22 @@ void restAPIMode() {
 //  const char *ssid_temp = doc["ssid"];
 //  const char *passwd_temp = doc["passwd"];
 
+  /* Deserialization for ArduinoJson version 5
   DynamicJsonBuffer jb;
   JsonObject &jsonObject = jb.parseObject(webServer.arg("plan"));
   if (!jsonObject.success()) {
    Serial.println("parseObject() failed");
    return;
+  }
+  */
+  // ArduinoJson version 6
+  DynamicJsonDocument doc(1024);
+  JsonObject jsonObject = doc.to<JsonObject>();
+  auto error = deserializeJson(doc, webServer.arg("plan"));
+  if (error) {
+    Serial.print(F("deserializeJson() failed with code "));
+    Serial.println(error.c_str());
+    return;
   }
   const char *type_temp = jsonObject["type"];
   const char *ssid_temp = jsonObject["ssid"];
@@ -295,7 +319,7 @@ void scanNetwork() {
       Serial.print(" (");
       Serial.print(WiFi.RSSI(i));
       Serial.print(")");
-      Serial.println((WiFi.encryptionType(i) == ENC_TYPE_NONE) ? "" : "*");
+      Serial.println((WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "" : "*");
       Serial.print("\r");
     }
   }

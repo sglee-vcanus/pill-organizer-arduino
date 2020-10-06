@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include <EEPROM.h>
 
 #ifndef STASSID
 #define STASSID                   ""
@@ -27,6 +28,30 @@ WiFiMode_t _currentMode = WIFI_OFF;//for ESP32
 //ESP8266WebServer webServer(80);//for ESP8266
 WebServer webServer(80);//for ESP32
 
+#define EEPROM_SIZE 20
+int addr = 0;
+String ipAddress[4];
+
+/**
+ * Read IP address from EEPROM
+ */
+void readEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("Failed to initialize EEPROM");
+    Serial.println("Restarting...");
+    delay(1000);
+    ESP.restart();
+  }
+
+  //ipAddress = EEPROM.readString(addr);
+  //addr += ipAddress.length() + 1;
+  for (int i = 0; i < 4; i++)
+  {
+    ipAddress[i] = EEPROM.readString(addr);
+    addr += ipAddress[i].length() + 1;
+  }
+}
+
 /**
  * Internal function to set mode off
  */
@@ -38,16 +63,19 @@ void _setModeOFF() {
 /**
  * Internal function to set mode to be AP
  */
-void _setModeAP() { 
+void _setModeAP() {    
+  Serial.println("Configuring access point...");
+
   WiFi.mode(WIFI_AP);
-  IPAddress Ip(192, 168, 10, 1);
+  WiFi.softAP(APSSID,APPSK);
+  Serial.println("Wait 100ms for AP_START...");
+  delay(100);
+
+  Serial.println("Set softAPConfig");
+  IPAddress Ip(ipAddress[0].toInt(), ipAddress[1].toInt(), ipAddress[2].toInt(), ipAddress[3].toInt());
+  //IPAddress Ip(192, 168, 10, 1);
   IPAddress NMask(255, 255, 255, 0);
   WiFi.softAPConfig(Ip, Ip, NMask);
-  
-  Serial.print("Configuring access point...");
-  Serial.println(APSSID);
-  WiFi.softAP(APSSID,APPSK);
-
   IPAddress ip = WiFi.softAPIP();
   Serial.print("AP mode, IP address: ");
   Serial.println(ip);
@@ -246,14 +274,6 @@ void restAPIMode() {
 //    }
 //  }
 
-//  DynamicJsonDocument doc(1024);
-//  DeserializationError error = deserializeJson(doc, webServer.arg("plain"));
-//  if(error)
-//    return;
-//  const char *type_temp = doc["type"];
-//  const char *ssid_temp = doc["ssid"];
-//  const char *passwd_temp = doc["passwd"];
-
   /* Deserialization for ArduinoJson version 5
   DynamicJsonBuffer jb;
   JsonObject &jsonObject = jb.parseObject(webServer.arg("plan"));
@@ -330,8 +350,8 @@ void setup() {
   digitalWrite(GPIO5,0);
   Serial.begin(115200);
   Serial.println();
-  
-//  // scan network
+
+  readEEPROM();
   scanNetwork();
 
   setMode(WIFI_AP);

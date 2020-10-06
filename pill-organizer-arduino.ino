@@ -1,7 +1,9 @@
+/* ESP32, ArduinoJson version 6 */
 #include <SoftwareSerial.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
+#include <WiFi.h>
+#include <WebServer.h>
 #include <ArduinoJson.h>
+#include <EEPROM.h>
 
 #ifndef STASSID
 #define STASSID                   ""
@@ -19,10 +21,36 @@ String ssid = STASSID;
 String passwd = STAPSK;
 const char *host = "http://vcanus.com/pillo";
 const uint16_t port = 80;
-WiFiMode _currentMode = WIFI_OFF;
+//WiFiMode _currentMode = WIFI_OFF;//for ESP8266
+WiFiMode_t _currentMode = WIFI_OFF;//for ESP32
 
 ////WiFiClient client;
-ESP8266WebServer webServer(80);
+//ESP8266WebServer webServer(80);//for ESP8266
+WebServer webServer(80);//for ESP32
+
+#define EEPROM_SIZE 20
+int addr = 0;
+String ipAddress[4];
+
+/**
+ * Read IP address from EEPROM
+ */
+void readEEPROM() {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("Failed to initialize EEPROM");
+    Serial.println("Restarting...");
+    delay(1000);
+    ESP.restart();
+  }
+
+  //ipAddress = EEPROM.readString(addr);
+  //addr += ipAddress.length() + 1;
+  for (int i = 0; i < 4; i++)
+  {
+    ipAddress[i] = EEPROM.readString(addr);
+    addr += ipAddress[i].length() + 1;
+  }
+}
 
 /**
  * Internal function to set mode off
@@ -35,16 +63,19 @@ void _setModeOFF() {
 /**
  * Internal function to set mode to be AP
  */
-void _setModeAP() { 
+void _setModeAP() {    
+  Serial.println("Configuring access point...");
+
   WiFi.mode(WIFI_AP);
-  IPAddress Ip(192, 168, 10, 1);
+  WiFi.softAP(APSSID,APPSK);
+  Serial.println("Wait 100ms for AP_START...");
+  delay(100);
+
+  Serial.println("Set softAPConfig");
+  IPAddress Ip(ipAddress[0].toInt(), ipAddress[1].toInt(), ipAddress[2].toInt(), ipAddress[3].toInt());
+  //IPAddress Ip(192, 168, 10, 1);
   IPAddress NMask(255, 255, 255, 0);
   WiFi.softAPConfig(Ip, Ip, NMask);
-  
-  Serial.print("Configuring access point...");
-  Serial.println(APSSID);
-  WiFi.softAP(APSSID,APPSK);
-
   IPAddress ip = WiFi.softAPIP();
   Serial.print("AP mode, IP address: ");
   Serial.println(ip);
@@ -57,10 +88,8 @@ void _setModeCommonSTA() {
   Serial.print("Connecting to ");
   Serial.println(ssid);
 
-  char *ssidArray = new char [ssid.length()+1];
-  char *passwdArray = new char [passwd.length()+1];
-  ssid.toCharArray(ssidArray,ssid.length()+1);
-  passwd.toCharArray(passwdArray,passwd.length()+1);
+  const char *ssidArray = ssid.c_str();
+  const char *passwdArray = passwd.c_str();
   /**
    * Delete the below, later
    */
@@ -105,7 +134,7 @@ void _setModeAPSTA() {
  * Set Mode
  * WIFI_OFF, WIFI_STA, WIFI_AP, WIFI_AP_STA
  */
-void setMode(WiFiMode mode) {
+void setMode(WiFiMode_t mode) {
   if(_currentMode == mode) {
     return;
   }
@@ -170,17 +199,29 @@ void restAPIRoot() {
 
   int nNetwork = WiFi.scanNetworks();
   const int capacity = JSON_OBJECT_SIZE(10);
+  /* ArduinoJson version 5
   StaticJsonBuffer<capacity> jb;
   JsonObject &jsonObject = jb.createObject();
   JsonArray &jsonArray = jb.createArray();
+   */
+  // ArduinoJson version 6
+  StaticJsonDocument<capacity> doc;
+  JsonObject jsonObject = doc.to<JsonObject>();
+  JsonArray jsonArray = doc.to<JsonArray>();
   for(int i=0; i<nNetwork; i++) {
     jsonArray.add(WiFi.SSID(i));
   }
   String arrayResult = "";
-  jsonArray.printTo(arrayResult);
-  jsonObject.set("name",jsonArray);
   String result = "";
+  /* Serialization for ArduinoJson version 5
+  jsonArray.printTo(arrayResult); 
+  jsonObject.set("name",jsonArray);
   jsonObject.printTo(result);
+   */
+  // ArduinoJson version 6
+  serializeJson(jsonArray, arrayResult);
+  jsonObject["name"] = jsonArray;
+  serializeJson(jsonObject, result);
   Serial.println(result);
 
   webServer.send(200,"application/json",result);
@@ -233,19 +274,22 @@ void restAPIMode() {
 //    }
 //  }
 
-//  DynamicJsonDocument doc(1024);
-//  DeserializationError error = deserializeJson(doc, webServer.arg("plain"));
-//  if(error)
-//    return;
-//  const char *type_temp = doc["type"];
-//  const char *ssid_temp = doc["ssid"];
-//  const char *passwd_temp = doc["passwd"];
-
+  /* Deserialization for ArduinoJson version 5
   DynamicJsonBuffer jb;
   JsonObject &jsonObject = jb.parseObject(webServer.arg("plan"));
   if (!jsonObject.success()) {
    Serial.println("parseObject() failed");
    return;
+  }
+  */
+  // ArduinoJson version 6
+  DynamicJsonDocument doc(1024);
+  JsonObject jsonObject = doc.to<JsonObject>();
+  auto error = deserializeJson(doc, webServer.arg("plan"));
+  if (error) {
+    Serial.print(F("deserializeJson() failed with code "));
+    Serial.println(error.c_str());
+    return;
   }
   const char *type_temp = jsonObject["type"];
   const char *ssid_temp = jsonObject["ssid"];
@@ -295,7 +339,7 @@ void scanNetwork() {
       Serial.print(" (");
       Serial.print(WiFi.RSSI(i));
       Serial.print(")");
-      Serial.println((WiFi.encryptionType(i) == ENC_TYPE_NONE) ? "" : "*");
+      Serial.println((WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "" : "*");
       Serial.print("\r");
     }
   }
@@ -306,8 +350,8 @@ void setup() {
   digitalWrite(GPIO5,0);
   Serial.begin(115200);
   Serial.println();
-  
-//  // scan network
+
+  readEEPROM();
   scanNetwork();
 
   setMode(WIFI_AP);

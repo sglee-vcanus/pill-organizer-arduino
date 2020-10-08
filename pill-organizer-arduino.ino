@@ -3,13 +3,7 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
-#include "time.h"
 #include "DHT.h"
-
-#ifndef STASSID
-#define STASSID "VC240"
-#define STAPSK  "JumpUp+1"
-#endif
 
 #ifndef APSSID
 #define APSSID  "VCANUS_PILLO_AP"
@@ -22,17 +16,6 @@ WebServer server(80);
 int addr = 0;
 String ip[4];
 
-const char* ntpServer = "pool.ntp.org";
-uint8_t timeZone = 9;
-uint8_t summerTime = 0;
-struct tm timeinfo;
-int sendHour;
-int sendMin;
-int sendSec;
-int sendDay;
-int sendMonth;
-int sendYear;
-
 #define DHTPIN 4
 #define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
@@ -43,17 +26,10 @@ void setWebServer();
 void root();
 void notFound();
 void displayJson();
-void getLocalTime();
-void connectToWiFi();
 
 void setup() {
   Serial.begin(115200);
   Serial.println();
-
-  // settings for reading local time
-  connectToWiFi();
-  configTime(3600 * timeZone, 3600 * summerTime, ntpServer);
-  getLocalTime();
 
   // settings for web server
   readEEPROM();  
@@ -139,57 +115,13 @@ void notFound() {
 void displayJson() {
   /* Set '/dhtjson' page */
   delay(1000);
-  getLocalTime();
-  String measuredTime = "";
-  measuredTime = String(sendYear) + "/" + String(sendMonth) + "/" + String(sendDay) + " ";
-  measuredTime += String(sendHour) + ":" + String(sendMin) + ":" + String(sendSec);
   float temperature = dht.readTemperature();
   float humidity = dht.readHumidity();
   String result = "";
   DynamicJsonDocument doc(1024);
-  doc["measured_time"] = measuredTime;
   doc["temperature"] = temperature;
   doc["humidity"] = humidity;
   serializeJson(doc, result);
   Serial.println(result);
   server.send(200, "application/json", result);
-}
-
-void getLocalTime() {
-  if (!getLocalTime(&timeinfo)) {
-    Serial.println("Failed to obtain time");
-    return;
-  }
-
-  sendHour = timeinfo.tm_hour;
-  sendMin = timeinfo.tm_min;
-  sendSec = timeinfo.tm_sec;
-
-  sendDay = timeinfo.tm_mday;
-  sendMonth = timeinfo.tm_mon + 1;
-  sendYear = timeinfo.tm_year + 1900;
-}
-
-void connectToWiFi() {
-  WiFi.disconnect();
-  delay(1000);
-  
-  WiFi.begin(STASSID, STAPSK);
-  Serial.println("Connecting");
-  
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-  
-  Serial.println();
-  Serial.print("Connected to SSID : ");
-  Serial.println(WiFi.SSID());
-  Serial.print("IP address allotted to ESP : ");
-  Serial.println(WiFi.localIP());
-  Serial.print("MAC Address of ESP : ");
-  Serial.println(WiFi.macAddress());
-  Serial.print("Signal strength is : ");
-  Serial.println(WiFi.RSSI());
 }

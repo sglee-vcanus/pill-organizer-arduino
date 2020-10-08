@@ -1,41 +1,74 @@
-/* ESP32, ArduinoJson version 6 */
 #include <SoftwareSerial.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
+#include "time.h"
+#include "DHT.h"
 
 #ifndef STASSID
-#define STASSID                   ""
-#define STAPSK                    ""
+#define STASSID "VC240"
+#define STAPSK  "JumpUp+1"
 #endif
 
 #ifndef APSSID
-#define APSSID                    "VCANUS_PILLO_AP"
-#define APPSK                     ""
+#define APSSID  "VCANUS_PILLO_AP"
+#define APPSK   "vPillo&1"
 #endif
 
-#define GPIO5                     5
-#define WIFI_CONNECTION_TIMEOUT   5000
-String ssid = STASSID;
-String passwd = STAPSK;
-const char *host = "http://vcanus.com/pillo";
-const uint16_t port = 80;
-//WiFiMode _currentMode = WIFI_OFF;//for ESP8266
-WiFiMode_t _currentMode = WIFI_OFF;//for ESP32
-
-////WiFiClient client;
-//ESP8266WebServer webServer(80);//for ESP8266
-WebServer webServer(80);//for ESP32
+WebServer server(80);
 
 #define EEPROM_SIZE 20
 int addr = 0;
-String ipAddress[4];
+String ip[4];
 
-/**
- * Read IP address from EEPROM
- */
+const char* ntpServer = "pool.ntp.org";
+uint8_t timeZone = 9;
+uint8_t summerTime = 0;
+struct tm timeinfo;
+int sendHour;
+int sendMin;
+int sendSec;
+int sendDay;
+int sendMonth;
+int sendYear;
+
+#define DHTPIN 4
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+
+void readEEPROM();
+void setModeAP();
+void setWebServer();
+void root();
+void notFound();
+void displayJson();
+void getLocalTime();
+void connectToWiFi();
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println();
+
+  // settings for reading local time
+  connectToWiFi();
+  configTime(3600 * timeZone, 3600 * summerTime, ntpServer);
+  getLocalTime();
+
+  // settings for web server
+  readEEPROM();  
+  setModeAP();
+  dht.begin();
+  setWebServer();
+}
+
+void loop() {
+  server.handleClient();
+  delay(100);
+}
+
 void readEEPROM() {
+  /* Read IP address from EEPROM */
   if (!EEPROM.begin(EEPROM_SIZE)) {
     Serial.println("Failed to initialize EEPROM");
     Serial.println("Restarting...");
@@ -43,27 +76,18 @@ void readEEPROM() {
     ESP.restart();
   }
 
-  //ipAddress = EEPROM.readString(addr);
-  //addr += ipAddress.length() + 1;
   for (int i = 0; i < 4; i++)
   {
-    ipAddress[i] = EEPROM.readString(addr);
-    addr += ipAddress[i].length() + 1;
+    ip[i] = EEPROM.readString(addr);
+    addr += ip[i].length() + 1;
   }
 }
 
-/**
- * Internal function to set mode off
- */
-void _setModeOFF() {
-  WiFi.softAPdisconnect();
+void setModeAP() {
+  /* Set mode to be AP*/
   WiFi.disconnect();
-}
-
-/**
- * Internal function to set mode to be AP
- */
-void _setModeAP() {    
+  delay(1000);
+     
   Serial.println("Configuring access point...");
 
   WiFi.mode(WIFI_AP);
@@ -72,392 +96,100 @@ void _setModeAP() {
   delay(100);
 
   Serial.println("Set softAPConfig");
-  IPAddress Ip(ipAddress[0].toInt(), ipAddress[1].toInt(), ipAddress[2].toInt(), ipAddress[3].toInt());
-  //IPAddress Ip(192, 168, 10, 1);
+  IPAddress Ip(ip[0].toInt(), ip[1].toInt(), ip[2].toInt(), ip[3].toInt());
   IPAddress NMask(255, 255, 255, 0);
   WiFi.softAPConfig(Ip, Ip, NMask);
-  IPAddress ip = WiFi.softAPIP();
-  Serial.print("AP mode, IP address: ");
-  Serial.println(ip);
-}
-
-/**
- * Internal common function to set mode to be STA
- */
-void _setModeCommonSTA() {
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-
-  const char *ssidArray = ssid.c_str();
-  const char *passwdArray = passwd.c_str();
-  /**
-   * Delete the below, later
-   */
-  Serial.println(ssidArray);
-  Serial.println(passwdArray);
-  WiFi.begin(ssidArray, passwdArray);
-  int elapsedTime = 0;
-  int oneDelay = 500;
-  while(WiFi.status() != WL_CONNECTED) {
-    delay(oneDelay);
-    elapsedTime += oneDelay;
-    Serial.print(".");
-    if(elapsedTime > WIFI_CONNECTION_TIMEOUT) {
-      Serial.print("WiFi connecion failed");
-      if(_currentMode != WIFI_AP) {
-        WiFi.softAPdisconnect();
-        WiFi.disconnect();
-        _setModeAP();
-      }
-      return;
-    }
-  }
-  Serial.println("WiFi connected");
-
-  // Print the IP address
-  Serial.println("STA mode, IP address: ");
-  Serial.println(WiFi.localIP());
-}
-
-void _setModeSTA() {
-  WiFi.mode(WIFI_STA);
-  _setModeCommonSTA();
-}
-
-void _setModeAPSTA() {
-  WiFi.mode(WIFI_AP_STA);
-  _setModeCommonSTA();
-}
-
-// default mode is AP
-/**
- * Set Mode
- * WIFI_OFF, WIFI_STA, WIFI_AP, WIFI_AP_STA
- */
-void setMode(WiFiMode_t mode) {
-  if(_currentMode == mode) {
-    return;
-  }
-  switch(_currentMode) {
-    case WIFI_OFF:
-    break;
-    case WIFI_STA:
-      WiFi.softAPdisconnect();
-      WiFi.disconnect();
-      Serial.println("WiFi_STA disconnect()");
-    break;
-    case WIFI_AP:
-      WiFi.softAPdisconnect();
-      WiFi.disconnect();
-      Serial.println("WiFi_AP disconnect()");
-    break;
-    case WIFI_AP_STA:
-      WiFi.softAPdisconnect();
-      WiFi.disconnect();
-      Serial.println("WiFi_AP_STA disconnect()");
-    break;
-    default:
-    Serial.println("undefined mode");
-    break;
-  }
-  switch(mode) {
-    case WIFI_OFF:
-      _setModeOFF();
-    break;
-    case WIFI_STA:
-      _setModeSTA();
-    break;
-    case WIFI_AP:
-      _setModeAP();
-    break;
-    case WIFI_AP_STA:
-      _setModeAPSTA();
-    break;
-    default:
-    Serial.println("undefined mode");
-    break;
-  }
-  delay(100);
-}
-
-void closeWebServer() {
-   webServer.stop();
-   webServer.close();
-   delay(10);
+  IPAddress myIP = WiFi.softAPIP();
+  Serial.print("AP mode, SSID: "); Serial.print(APSSID);
+  Serial.print(" / IP address: "); Serial.println(myIP);
 }
 
 void setWebServer() {
-  webServer.on("/", restAPIRoot);
-  webServer.on("/led/", restAPILed);
-  webServer.on("/mode/", restAPIMode);
-  webServer.begin(80);
-  Serial.println("Http server started...");
+  server.on("/", root);
+  server.on("/dhtjson", displayJson);
+  server.onNotFound(notFound);
+  
+  server.begin();
+  Serial.println("Server started");
 }
 
-void restAPIRoot() {
-  Serial.println("root api is called");
+void root() {
+  /* Set index page */
+  String content = "<h3>Connected!</h3><br>";
+  content += "<a href=\"/dhtjson\">click here to check sensor data</a>";
+  server.send(200, "text/html", content);
+}
 
-  int nNetwork = WiFi.scanNetworks();
-  const int capacity = JSON_OBJECT_SIZE(10);
-  /* ArduinoJson version 5
-  StaticJsonBuffer<capacity> jb;
-  JsonObject &jsonObject = jb.createObject();
-  JsonArray &jsonArray = jb.createArray();
-   */
-  // ArduinoJson version 6
-  StaticJsonDocument<capacity> doc;
-  JsonObject jsonObject = doc.to<JsonObject>();
-  JsonArray jsonArray = doc.to<JsonArray>();
-  for(int i=0; i<nNetwork; i++) {
-    jsonArray.add(WiFi.SSID(i));
+void notFound() {
+  /* Set not found page */
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+  for (uint8_t i = 0; i < server.args(); i++) {
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
   }
-  String arrayResult = "";
+  server.send(404, "text/plain", message);
+}
+
+void displayJson() {
+  /* Set '/dhtjson' page */
+  delay(1000);
+  getLocalTime();
+  String measuredTime = "";
+  measuredTime = String(sendYear) + "/" + String(sendMonth) + "/" + String(sendDay) + " ";
+  measuredTime += String(sendHour) + ":" + String(sendMin) + ":" + String(sendSec);
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
   String result = "";
-  /* Serialization for ArduinoJson version 5
-  jsonArray.printTo(arrayResult); 
-  jsonObject.set("name",jsonArray);
-  jsonObject.printTo(result);
-   */
-  // ArduinoJson version 6
-  serializeJson(jsonArray, arrayResult);
-  jsonObject["name"] = jsonArray;
-  serializeJson(jsonObject, result);
-  Serial.println(result);
-
-  webServer.send(200,"application/json",result);
-}
-
-void restAPILed() {
-  Serial.println("lamp api is called");
-  for(int i=0; i<webServer.args(); i++) {
-    String paraName = webServer.argName(i);
-    String paraValue = webServer.arg(i);
-    Serial.print(paraName);
-    Serial.print(" : ");
-    Serial.println(paraValue);
-    if(paraName.equals("value")) {
-      if(paraValue.equals("on")) {
-        digitalWrite(GPIO5,1);
-        webServer.send(200, "test/html", "Lamp is turned on");
-      } else if(paraValue.equals("off")) {
-        digitalWrite(GPIO5,0);
-        webServer.send(200, "test/html", "Lamp is turned off");
-      } else {
-        Serial.println("undefined parameter value");
-      }
-    }
-  }  
-}
-
-void restAPIMode() {
-  Serial.println("mode api is called");
-  String type = "";
-//  String ssid = "";
-//  String passwd = "";
-//  Serial.println(webServer.args());
-//  for(int i=0; i<webServer.args(); i++) {
-//    String paraName = webServer.argName(i);
-//    String paraValue = webServer.arg(i);
-//    Serial.print(paraName);
-//    Serial.print(" : ");
-//    Serial.println(paraValue);
-//    if(paraName.equals("type")) {
-//      type = paraValue;
-//    } else if(paraName.equals("ssid")) {
-//      ssid=paraValue;
-//    } else if(paraName.equals("passwd")) {
-//      passwd=paraValue;
-//    } else {
-//      Serial.println("undefined parameter name");
-//      webServer.send(400, "test/html", "undefined parameter name");
-//      return;
-//    }
-//  }
-
-  /* Deserialization for ArduinoJson version 5
-  DynamicJsonBuffer jb;
-  JsonObject &jsonObject = jb.parseObject(webServer.arg("plan"));
-  if (!jsonObject.success()) {
-   Serial.println("parseObject() failed");
-   return;
-  }
-  */
-  // ArduinoJson version 6
   DynamicJsonDocument doc(1024);
-  JsonObject jsonObject = doc.to<JsonObject>();
-  auto error = deserializeJson(doc, webServer.arg("plan"));
-  if (error) {
-    Serial.print(F("deserializeJson() failed with code "));
-    Serial.println(error.c_str());
+  doc["measured_time"] = measuredTime;
+  doc["temperature"] = temperature;
+  doc["humidity"] = humidity;
+  serializeJson(doc, result);
+  Serial.println(result);
+  server.send(200, "application/json", result);
+}
+
+void getLocalTime() {
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
     return;
   }
-  const char *type_temp = jsonObject["type"];
-  const char *ssid_temp = jsonObject["ssid"];
-  const char *passwd_temp = jsonObject["passwd"];
 
-  type = type_temp;
-  ssid = ssid_temp;
-  passwd = passwd_temp;
-  
-  if(type.equals("WIFI_AP")) {
-      webServer.send(200, "test/html", "Mode is changed to WIFI_AP");
-      delay(100);
-      closeWebServer();
-      setMode(WIFI_AP);
-      setWebServer();
-    } else if(type.equals("WIFI_STA")) {
-      webServer.send(200, "test/html", "Mode is changed to WIFI_STA");
-      delay(100);
-      closeWebServer();
-      setMode(WIFI_STA);
-      setWebServer();
-    } else if(type.equals("WIFI_AP_STA")) {
-      webServer.send(200, "test/html", "Mode is changed to WIFI_AP_STA");
-      delay(100);
-      closeWebServer();
-      setMode(WIFI_AP_STA);
-      setWebServer();
-    } else {
-      Serial.println("undefined mode type");
-      webServer.send(400, "test/html", "undefined mode type");
-    }
+  sendHour = timeinfo.tm_hour;
+  sendMin = timeinfo.tm_min;
+  sendSec = timeinfo.tm_sec;
+
+  sendDay = timeinfo.tm_mday;
+  sendMonth = timeinfo.tm_mon + 1;
+  sendYear = timeinfo.tm_year + 1900;
 }
 
-void scanNetwork() {  
-  // Scan Network
-  int nNetwork = WiFi.scanNetworks();
-  Serial.println("scan done");
-  if(nNetwork == 0) {
-    Serial.println("no networks found");
-  } else {
-    Serial.println(nNetwork);
-    Serial.println("networks found");
-    for(int i=0; i<nNetwork; i++) {
-      Serial.print(i+1);
-      Serial.print(": ");
-      Serial.print(WiFi.SSID(i));
-      Serial.print(" (");
-      Serial.print(WiFi.RSSI(i));
-      Serial.print(")");
-      Serial.println((WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "" : "*");
-      Serial.print("\r");
-    }
+void connectToWiFi() {
+  WiFi.disconnect();
+  delay(1000);
+  
+  WiFi.begin(STASSID, STAPSK);
+  Serial.println("Connecting");
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
   }
-}
-
-void setup() {
-  pinMode(GPIO5, OUTPUT);
-  digitalWrite(GPIO5,0);
-  Serial.begin(115200);
   Serial.println();
-
-  readEEPROM();
-  scanNetwork();
-
-  setMode(WIFI_AP);
-  setWebServer();
-}
-
-//void httpResponse() {
-//  // Check if a client has connected
-//  WiFiClient checkClient = server.available();
-//  if (!checkClient || !checkClient.connected()) {
-//    return;
-//  }
-//
-//  // Wait until the client sends some data
-//  Serial.println("new client");
-//
-//  unsigned long timeout = millis();
-//  while(checkClient.available() == 0) {
-//    if(millis() - timeout > 3000) {
-//      Serial.println(">>> Client Timeout !");
-//      checkClient.stop();
-//      delay(1);
-//      return;
-//    }
-//    delay(1000);
-//  }
-////  if(checkClient.available()) {
-////    digitalWrite(GPIO5,1);
-////  } else {
-////    digitalWrite(GPIO5,0);
-////  }
-//
-////  // Read the first line of the request
-////  String req = checkClient.readStringUntil('\r');
-////  Serial.println(req);
-////  // Match the request
-////  int val;
-////  if (req.indexOf("/gpio/0") != -1) {
-////    val = 0;
-////  } else if (req.indexOf("/gpio/1") != -1) {
-////    val = 1;
-////  } else {
-////    Serial.println("invalid request");
-////    checkClient.print("HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE HTML>\r\n<html><body>Not found</body></html>");
-////    checkClient.stop();
-////    delay(1);
-////    return;
-////  }
-////  digitalWrite(GPIO5,val);
-//
-////  // Prepare the response
-////  String s = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE HTML>\r\n<html>\r\n";
-//////  s += (val) ? "high" : "low";
-////  s += req;
-////  s += "\r\n";
-////  s += "Request is OK";
-////  s += "\r\n";
-////  s += "</html>\n";
-////
-////  // Send the response to the client
-////  checkClient.print(s);
-////  checkClient.stop();
-////  delay(1);
-////  Serial.println("Client disconnected");
-//
-//  // The client will actually be disconnected
-//  // when the function returns and 'client' object is detroyed  
-//}
-
-void loop() {
-
-//  if(_currentMode == WIFI_OFF) {
-//    delay(1000);
-//    return;
-//  }
   
-  webServer.handleClient();
-  
-//  httpResponse();
-
-////  WiFiClient client;
-//  if(!client.connected()) {
-//    if(!client.connect(host,port)) {
-//      Serial.println("connection failed");
-//      delay(2000);
-//      return;
-//    }
-//  } else {
-////    Serial.print(client.remoteIP());
-////    Serial.println("\n");
-//  }
-
-  delay(100);
-  
-//  Serial.println("sending data to server");
-//  if(client.connected()) {
-//    client.println("hello");
-//  }
-
-//  unsigned long timeout = millis();
-//  while(client.available() == 0) {
-//    if(millis() - timeout > 5000) {
-//      Serial.println(">>> Client Timeout! ");
-//      client.stop();
-//      delay(60000);
-//      return;
-//    }
-//  }
+  Serial.println();
+  Serial.print("Connected to SSID : ");
+  Serial.println(WiFi.SSID());
+  Serial.print("IP address allotted to ESP : ");
+  Serial.println(WiFi.localIP());
+  Serial.print("MAC Address of ESP : ");
+  Serial.println(WiFi.macAddress());
+  Serial.print("Signal strength is : ");
+  Serial.println(WiFi.RSSI());
 }
